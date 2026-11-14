@@ -81,6 +81,7 @@ jobs:
             type=semver,pattern={{version}}
             type=semver,pattern={{major}}.{{minor}}
             type=sha
+            type=raw,value=personal,enable=${{ github.ref_type == 'tag' && github.repository == 'BRENDON-MB/gatearr' }}
             type=raw,value=0.1.0,enable=${{ inputs.replace_initial_v010 == true }}
             type=raw,value=0.1,enable=${{ inputs.replace_initial_v010 == true }}
             type=raw,value=latest,enable=${{ inputs.replace_initial_v010 == true }}
