@@ -195,8 +195,12 @@ app = FastAPI(title="Gatearr", version=VERSION, lifespan=lifespan, docs_url=None
 app.state.public_url = settings.public_url
 app.mount("/static", StaticFiles(directory="app/static"), name="static")
 
-def cookie(response, value, secure=None):
-    response.set_cookie("gatearr_session", value, max_age=43200, httponly=True, secure=settings.secure_cookie if secure is None else secure, samesite="lax", path="/")
+SESSION_TTL = 12 * 60 * 60
+REMEMBERED_SESSION_TTL = 30 * 24 * 60 * 60
+
+
+def cookie(response, value, secure=None, *, max_age=SESSION_TTL):
+    response.set_cookie("gatearr_session", value, max_age=max_age, httponly=True, secure=settings.secure_cookie if secure is None else secure, samesite="lax", path="/")
 
 @app.middleware("http")
 async def context(request: Request, call_next):
@@ -220,7 +224,7 @@ async def context(request: Request, call_next):
         fresh = session is None
         if fresh:
             raw = secrets.token_urlsafe(32)
-            session = Session(digest=digest(raw), csrf=secrets.token_urlsafe(32), expires=now()+43200, version=0)
+            session = Session(digest=digest(raw), csrf=secrets.token_urlsafe(32), expires=now()+SESSION_TTL, version=0)
             db.add(session)
             db.commit()
         user = db.get(User, session.user_id) if session.user_id else None
@@ -555,15 +559,18 @@ def emby_error(request, exc):
 def redirect(path):
     return RedirectResponse(path, status_code=303)
 
-def rotate(request, user, destination=None):
+def rotate(request, user, destination=None, *, remember=None):
+    # Initial setup keeps its existing 12-hour cookie. Login passes an explicit choice.
+    ttl = REMEMBERED_SESSION_TTL if remember else SESSION_TTL
+    max_age = None if remember is False else ttl
     db = request.state.db
     db.delete(request.state.session)
     raw = secrets.token_urlsafe(32)
-    db.add(Session(digest=digest(raw), user_id=user.id, csrf=secrets.token_urlsafe(32), expires=now()+43200, version=user.version))
+    db.add(Session(digest=digest(raw), user_id=user.id, csrf=secrets.token_urlsafe(32), expires=now()+ttl, version=user.version))
     db.commit()
     pending=user.admin and config(db,"onboarding_required")=="true"
     response = redirect(destination or ("/admin/setup" if pending else "/home"))
-    cookie(response, raw,settings.secure_cookie or urlsplit(config(db,"public_url",settings.public_url)).scheme=="https")
+    cookie(response, raw,settings.secure_cookie or urlsplit(config(db,"public_url",settings.public_url)).scheme=="https", max_age=max_age)
     request.state.rotated = True
     request.state.new_session_digest = digest(raw)
     return response
@@ -664,7 +671,7 @@ def login(request: Request, data=Depends(form)):
     request.state.audit_actor=user
     request.state.audit_subject=user.id
     request.state.audit_action='auth.login'
-    response=rotate(request,user)
+    response=rotate(request,user,remember=data.get("remember") == "1")
     from .seerr_login import capture
     capture(db,user,password,request.state.new_session_digest)
     from .support import capture as capture_media
